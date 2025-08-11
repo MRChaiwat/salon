@@ -1,48 +1,59 @@
 // Import libraries
 const express = require('express');
 const { google } = require('googleapis');
-const { Client, middleware } = require('@line/bot-sdk');
+const { Client } = require('@line/bot-sdk');
+const cors = require('cors'); // Import the cors library
 require('dotenv').config();
 
 const app = express();
 const port = process.env.PORT || 3000;
 
-// --- 1. SET UP LINE MESSAGING API CLIENT and Webhook Middleware ---
+// Middleware to parse JSON bodies
+app.use(express.json());
+app.use(cors()); // Enable CORS for all routes
+
+// --- 1. SET UP LINE MESSAGING API CLIENT ---
 // Get LINE API credentials from environment variables for security
-const lineConfig = {
+const lineClient = new Client({
     channelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN,
     channelSecret: process.env.LINE_CHANNEL_SECRET,
-};
-
-const lineClient = new Client(lineConfig);
-
-// The middleware is only applied to the /webhook endpoint
-const lineMiddleware = middleware(lineConfig);
+});
 
 // --- 2. SET UP GOOGLE SHEETS API ---
 // Load service account key from the environment variable or a file
-const keyFile = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_KEY);
-const auth = new google.auth.GoogleAuth({
-    credentials: {
-        client_email: keyFile.client_email,
-        private_key: keyFile.private_key.replace(/\\n/g, '\n'), // Handle escaped newlines
-    },
-    scopes: ['https://www.googleapis.com/auth/spreadsheets'],
-});
+let auth;
+try {
+    const keyFile = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_KEY);
+    auth = new google.auth.GoogleAuth({
+        credentials: {
+            client_email: keyFile.client_email,
+            private_key: keyFile.private_key.replace(/\\n/g, '\n'), // Handle escaped newlines
+        },
+        scopes: ['https://www.googleapis.com/auth/spreadsheets'],
+    });
+} catch (e) {
+    console.error('Error parsing GOOGLE_SERVICE_ACCOUNT_KEY. Make sure it is a valid JSON string.');
+    console.error(e);
+    // Fallback to file-based key for local development
+    auth = new google.auth.GoogleAuth({
+        keyFile: './your-service-account-key.json', // Use file for local testing
+        scopes: ['https://www.googleapis.com/auth/spreadsheets'],
+    });
+}
+
 const sheets = google.sheets({ version: 'v4', auth });
 const spreadsheetId = process.env.GOOGLE_SHEET_ID; // Your Google Sheet ID
 
 // --- 3. API ENDPOINT TO RECEIVE BOOKING DATA FROM LIFF APP ---
 // This endpoint URL must match the one you set in the LIFF App settings.
-// It DOES NOT use the LINE middleware
-app.post('/api/booking', express.json(), async (req, res) => {
+app.post('/api/booking', async (req, res) => {
     try {
         const bookingData = req.body;
         console.log('Received booking data:', bookingData);
 
         // Prepare data for Google Sheets
         const rowData = [
-            new Date().toISOString(), // Add timestamp here
+            bookingData.timestamp,
             bookingData.date,
             bookingData.time,
             bookingData.mainService,
@@ -51,7 +62,7 @@ app.post('/api/booking', express.json(), async (req, res) => {
             bookingData.price,
             bookingData.customerName,
             bookingData.lineUserId,
-            bookingData.phone,
+            bookingData.phoneNumber,
             bookingData.notes,
         ];
 
@@ -77,13 +88,14 @@ app.post('/api/booking', express.json(), async (req, res) => {
         }
 
         // Send notification message to the technician
+        // You'll need to replace 'YOUR_TECHNICIAN_LINE_ID' with the actual LINE User ID of the technician
         const technicianMessage = `มีคิวจองใหม่!
         วันที่: ${bookingData.date}
         เวลา: ${bookingData.time}
         ลูกค้า: ${bookingData.customerName}
         บริการ: ${bookingData.mainService} > ${bookingData.subService}
         ช่าง: ${bookingData.technician}
-        เบอร์โทร: ${bookingData.phone}`;
+        เบอร์โทร: ${bookingData.phoneNumber}`;
 
         await lineClient.pushMessage(process.env.TECHNICIAN_LINE_ID, {
             type: 'text',
@@ -95,26 +107,8 @@ app.post('/api/booking', express.json(), async (req, res) => {
 
     } catch (error) {
         console.error('Error processing booking:', error);
-        res.status(500).json({ success: false, message: 'Internal Server Error', error: error.message });
+        res.status(500).json({ success: false, message: 'Internal Server Error' });
     }
-});
-
-// --- 4. WEBHOOK ENDPOINT FOR LINE MESSAGING API ---
-// This endpoint is for LINE to send events to. It uses the LINE middleware.
-app.post('/webhook', lineMiddleware, async (req, res) => {
-    console.log('Received webhook event:', JSON.stringify(req.body.events));
-    // Reply to messages
-    const event = req.body.events[0];
-    if (event && event.type === 'message' && event.message.type === 'text') {
-        const replyText = `คุณส่งข้อความมาว่า: "${event.message.text}"
-        หากต้องการจองคิว โปรดใช้ LIFF App ผ่าน Rich Menu ครับ`;
-        await lineClient.replyMessage(event.replyToken, {
-            type: 'text',
-            text: replyText,
-        });
-    }
-
-    res.status(200).send('OK');
 });
 
 // Basic endpoint for checking server status (optional)
