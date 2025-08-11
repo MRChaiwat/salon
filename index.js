@@ -16,8 +16,8 @@ const lineConfig = {
 
 const client = new Client(lineConfig);
 
-// กำหนดค่า Google Calendar จาก Environment Variables
-const calendarId = process.env.GOOGLE_CALENDAR_ID;
+// กำหนดค่า Google Sheets และ Google Service Account จาก Environment Variables
+const spreadsheetId = process.env.GOOGLE_SHEET_ID;
 let serviceAccountKey;
 try {
     serviceAccountKey = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_KEY);
@@ -31,11 +31,11 @@ const jwtClient = new google.auth.JWT(
     serviceAccountKey.client_email,
     null,
     serviceAccountKey.private_key,
-    ['https://www.googleapis.com/auth/calendar']
+    ['https://www.googleapis.com/auth/spreadsheets']
 );
 
-const calendar = google.calendar({
-    version: 'v3',
+const sheets = google.sheets({
+    version: 'v4',
     auth: jwtClient
 });
 
@@ -44,7 +44,6 @@ const port = process.env.PORT || 3000;
 app.listen(port, () => {
     console.log(`Server is running on port ${port}`);
 });
-
 
 // Middleware สำหรับ LINE Bot
 // ใช้ middleware ของ LINE เพียงตัวเดียวเท่านั้น
@@ -76,42 +75,47 @@ async function handleEvent(event) {
 
     // ตรวจสอบข้อความคำสั่ง "จองคิว"
     if (message.includes('จองคิว')) {
-        // ... (โค้ดสำหรับสร้างการจองคิว)
         try {
-            // สร้าง Event ใน Google Calendar
-            const eventId = uuidv4();
-            const summary = `จองคิวจาก LINE: ${userId}`;
-            const description = `ข้อความจากลูกค้า: ${message}`;
-            const startDateTime = moment().add(1, 'hour').toISOString();
-            const endDateTime = moment().add(2, 'hour').toISOString();
+            // ดึงชื่อลูกค้าจาก LINE (ในโค้ดจริงต้องเรียก API)
+            // สำหรับตอนนี้เราใช้ค่าจำลอง
+            const customerName = 'ลูกค้า LINE (จำลอง)';
+            const technicianName = 'ช่างยังไม่ได้เลือก';
 
-            const response = await calendar.events.insert({
-                calendarId: calendarId,
-                resource: {
-                    id: eventId,
-                    summary: summary,
-                    description: description,
-                    start: {
-                        dateTime: startDateTime,
-                        timeZone: 'Asia/Bangkok',
-                    },
-                    end: {
-                        dateTime: endDateTime,
-                        timeZone: 'Asia/Bangkok',
-                    },
+            // เตรียมข้อมูลที่จะบันทึกลง Google Sheets
+            const rowData = [
+                moment().format('YYYY-MM-DD HH:mm:ss'), // Timestamp
+                '', // BookingDate (ยังไม่มีข้อมูล)
+                '', // BookingTime (ยังไม่มีข้อมูล)
+                '', // MainService (ยังไม่มีข้อมูล)
+                '', // SubService (ยังไม่มีข้อมูล)
+                technicianName, // Technician
+                '', // Price (ยังไม่มีข้อมูล)
+                customerName, // CustomerName
+                userId, // LINEUserID
+                '', // PhoneNumber (ยังไม่มีข้อมูล)
+                message, // Notes
+            ];
+
+            // บันทึกข้อมูลลงใน Google Sheets
+            await sheets.spreadsheets.values.append({
+                spreadsheetId: spreadsheetId,
+                range: 'Sheet1!A:K', // กำหนดช่วงเซลล์ที่ต้องการบันทึก
+                valueInputOption: 'RAW',
+                requestBody: {
+                    values: [rowData],
                 },
             });
 
             // ส่งข้อความตอบกลับไปยัง LINE
-            const replyMessage = { 
-                type: 'text', 
-                text: `จองคิวให้แล้ว! ID: ${eventId}\nเวลา: ${moment(startDateTime).format('lll')} - ${moment(endDateTime).format('lll')}` 
+            const replyMessage = {
+                type: 'text',
+                text: 'ขอบคุณครับ! ระบบได้รับคำขอจองคิวแล้ว\nจะบันทึกข้อมูลไว้ใน Google Sheets ครับ'
             };
             await client.replyMessage(event.replyToken, replyMessage);
 
         } catch (error) {
-            console.error('Error adding event to Google Calendar:', error);
-            const replyMessage = { type: 'text', text: 'ขออภัย เกิดข้อผิดพลาดในการจองคิว' };
+            console.error('Error adding booking to Google Sheets:', error);
+            const replyMessage = { type: 'text', text: 'ขออภัย เกิดข้อผิดพลาดในการบันทึกการจอง' };
             await client.replyMessage(event.replyToken, replyMessage);
         }
     } else {
