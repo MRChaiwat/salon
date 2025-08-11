@@ -39,6 +39,13 @@ const calendar = google.calendar({
     auth: jwtClient
 });
 
+// กำหนดพอร์ตสำหรับเซิร์ฟเวอร์
+const port = process.env.PORT || 3000;
+app.listen(port, () => {
+    console.log(`Server is running on port ${port}`);
+});
+
+
 // Middleware สำหรับ LINE Bot
 app.use(express.json());
 app.use(middleware(lineConfig));
@@ -113,9 +120,3 @@ async function handleEvent(event) {
         await client.replyMessage(event.replyToken, replyMessage);
     }
 }
-
-// กำหนดพอร์ตสำหรับเซิร์ฟเวอร์
-const port = process.env.PORT || 3000;
-app.listen(port, () => {
-    console.log(`Server is running on port ${port}`);
-});
