@@ -1,121 +1,121 @@
-// Import libraries
+// โค้ดสำหรับ LINE Bot Server ที่แก้ไขแล้ว
 const express = require('express');
+const { Client, middleware } = require('@line/bot-sdk');
 const { google } = require('googleapis');
-const { Client } = require('@line/bot-sdk');
-const fs = require('fs');
+const { v4: uuidv4 } = require('uuid');
+const moment = require('moment');
 require('dotenv').config();
 
 const app = express();
-const port = process.env.PORT || 3000;
 
-// Middleware to parse JSON bodies
-app.use(express.json());
-
-// --- 1. SET UP LINE MESSAGING API CLIENT ---
-// Get LINE API credentials from environment variables for security
-const lineClient = new Client({
+// กำหนดค่า LINE Bot จาก Environment Variables
+const lineConfig = {
     channelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN,
     channelSecret: process.env.LINE_CHANNEL_SECRET,
-});
+};
 
-// --- 2. SET UP GOOGLE SHEETS API ---
-// Load service account key from the environment variable or a file
-let auth;
+const client = new Client(lineConfig);
+
+// กำหนดค่า Google Calendar จาก Environment Variables
+const calendarId = process.env.GOOGLE_CALENDAR_ID;
+let serviceAccountKey;
 try {
-    const keyFile = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_KEY);
-    auth = new google.auth.GoogleAuth({
-        credentials: {
-            client_email: keyFile.client_email,
-            private_key: keyFile.private_key.replace(/\\n/g, '\n'), // Handle escaped newlines
-        },
-        scopes: ['https://www.googleapis.com/auth/spreadsheets'],
-    });
+    serviceAccountKey = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_KEY);
 } catch (e) {
-    console.error('Error parsing GOOGLE_SERVICE_ACCOUNT_KEY. Make sure it is a valid JSON string.');
-    console.error(e);
-    // Fallback to file-based key for local development
-    auth = new google.auth.GoogleAuth({
-        keyFile: './your-service-account-key.json', // Use file for local testing
-        scopes: ['https://www.googleapis.com/auth/spreadsheets'],
-    });
+    console.error('Error parsing GOOGLE_SERVICE_ACCOUNT_KEY:', e);
+    // Exit the process if the key is invalid to prevent further errors
+    process.exit(1); 
 }
 
-const sheets = google.sheets({ version: 'v4', auth });
-const spreadsheetId = process.env.GOOGLE_SHEET_ID; // Your Google Sheet ID
+const jwtClient = new google.auth.JWT(
+    serviceAccountKey.client_email,
+    null,
+    serviceAccountKey.private_key,
+    ['https://www.googleapis.com/auth/calendar']
+);
 
-// --- 3. API ENDPOINT TO RECEIVE BOOKING DATA FROM LIFF APP ---
-// This endpoint URL must match the one you set in the LIFF App settings.
-app.post('/api/booking', async (req, res) => {
-    try {
-        const bookingData = req.body;
-        console.log('Received booking data:', bookingData);
+const calendar = google.calendar({
+    version: 'v3',
+    auth: jwtClient
+});
 
-        // Prepare data for Google Sheets
-        const rowData = [
-            bookingData.timestamp,
-            bookingData.date,
-            bookingData.time,
-            bookingData.mainService,
-            bookingData.subService,
-            bookingData.technician,
-            bookingData.price,
-            bookingData.customerName,
-            bookingData.lineUserId,
-            bookingData.phoneNumber,
-            bookingData.notes,
-        ];
+// Middleware สำหรับ LINE Bot
+app.use(express.json());
+app.use(middleware(lineConfig));
 
-        // Append data to Google Sheets
-        await sheets.spreadsheets.values.append({
-            spreadsheetId,
-            range: 'Sheet1!A:K', // Adjust the sheet name and range as needed
-            valueInputOption: 'USER_ENTERED',
-            resource: {
-                values: [rowData],
-            },
+// Endpoint สำหรับ Webhook ของ LINE
+app.post('/webhook', (req, res) => {
+    // ส่ง HTTP 200 OK กลับไปทันที เพื่อให้ LINE รู้ว่าเซิร์ฟเวอร์ได้รับคำขอแล้ว
+    res.status(200).send('OK');
+
+    // ประมวลผลเหตุการณ์จาก LINE ในเบื้องหลัง
+    Promise.all(req.body.events.map(handleEvent))
+        .catch((err) => {
+            console.error('Error processing LINE events:', err);
         });
+});
 
-        console.log('Booking data saved to Google Sheets.');
-
-        // Send confirmation message to the customer via LINE Messaging API
-        if (bookingData.lineUserId) {
-            await lineClient.pushMessage(bookingData.lineUserId, {
-                type: 'text',
-                text: '✅ ยืนยันการจองของคุณสำเร็จแล้ว! ขอบคุณที่ใช้บริการครับ',
-            });
-            console.log('Confirmation message sent to customer.');
-        }
-
-        // Send notification message to the technician
-        // You'll need to replace 'YOUR_TECHNICIAN_LINE_ID' with the actual LINE User ID of the technician
-        const technicianMessage = `มีคิวจองใหม่!
-        วันที่: ${bookingData.date}
-        เวลา: ${bookingData.time}
-        ลูกค้า: ${bookingData.customerName}
-        บริการ: ${bookingData.mainService} > ${bookingData.subService}
-        ช่าง: ${bookingData.technician}
-        เบอร์โทร: ${bookingData.phoneNumber}`;
-
-        await lineClient.pushMessage(process.env.TECHNICIAN_LINE_ID, {
-            type: 'text',
-            text: technicianMessage,
-        });
-        console.log('Notification message sent to technician.');
-
-        res.status(200).json({ success: true, message: 'Booking confirmed successfully.' });
-
-    } catch (error) {
-        console.error('Error processing booking:', error);
-        res.status(500).json({ success: false, message: 'Internal Server Error' });
+// ฟังก์ชันจัดการเหตุการณ์จาก LINE
+async function handleEvent(event) {
+    // กรองเหตุการณ์ที่ไม่ใช่ข้อความ
+    if (event.type !== 'message' || event.message.type !== 'text') {
+        return Promise.resolve(null);
     }
-});
 
-// Basic endpoint for checking server status (optional)
-app.get('/', (req, res) => {
-    res.send('Server is running and ready to accept bookings.');
-});
+    const userId = event.source.userId;
+    const message = event.message.text;
 
-// Start the server
+    console.log(`Received message from user ${userId}: ${message}`);
+
+    // ตรวจสอบข้อความคำสั่ง "จองคิว"
+    if (message.includes('จองคิว')) {
+        // ... (โค้ดสำหรับสร้างการจองคิว)
+        try {
+            // สร้าง Event ใน Google Calendar
+            const eventId = uuidv4();
+            const summary = `จองคิวจาก LINE: ${userId}`;
+            const description = `ข้อความจากลูกค้า: ${message}`;
+            const startDateTime = moment().add(1, 'hour').toISOString();
+            const endDateTime = moment().add(2, 'hour').toISOString();
+
+            const response = await calendar.events.insert({
+                calendarId: calendarId,
+                resource: {
+                    id: eventId,
+                    summary: summary,
+                    description: description,
+                    start: {
+                        dateTime: startDateTime,
+                        timeZone: 'Asia/Bangkok',
+                    },
+                    end: {
+                        dateTime: endDateTime,
+                        timeZone: 'Asia/Bangkok',
+                    },
+                },
+            });
+
+            // ส่งข้อความตอบกลับไปยัง LINE
+            const replyMessage = { 
+                type: 'text', 
+                text: `จองคิวให้แล้ว! ID: ${eventId}\nเวลา: ${moment(startDateTime).format('lll')} - ${moment(endDateTime).format('lll')}` 
+            };
+            await client.replyMessage(event.replyToken, replyMessage);
+
+        } catch (error) {
+            console.error('Error adding event to Google Calendar:', error);
+            const replyMessage = { type: 'text', text: 'ขออภัย เกิดข้อผิดพลาดในการจองคิว' };
+            await client.replyMessage(event.replyToken, replyMessage);
+        }
+    } else {
+        // ตอบกลับข้อความที่ไม่ตรงกับคำสั่ง
+        const replyMessage = { type: 'text', text: 'สวัสดีครับ โปรดพิมพ์ "จองคิว" เพื่อเริ่มต้นการจอง' };
+        await client.replyMessage(event.replyToken, replyMessage);
+    }
+}
+
+// กำหนดพอร์ตสำหรับเซิร์ฟเวอร์
+const port = process.env.PORT || 3000;
 app.listen(port, () => {
-    console.log(`Server listening on port ${port}`);
+    console.log(`Server is running on port ${port}`);
 });
