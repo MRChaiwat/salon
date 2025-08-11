@@ -15,18 +15,9 @@ const lineConfig = {
 };
 
 const lineClient = new Client(lineConfig);
+
 // The middleware is only applied to the /webhook endpoint
 const lineMiddleware = middleware(lineConfig);
-
-// Use a custom JSON middleware to handle both webhook (with signature) and LIFF (without)
-// This is a more robust way to handle both types of requests
-app.use(express.json({
-    verify: (req, res, buf) => {
-        if (req.url === '/webhook') {
-            req.rawBody = buf.toString(); // Store raw body for signature verification
-        }
-    }
-}));
 
 // --- 2. SET UP GOOGLE SHEETS API ---
 // Load service account key from the environment variable or a file
@@ -44,7 +35,7 @@ const spreadsheetId = process.env.GOOGLE_SHEET_ID; // Your Google Sheet ID
 // --- 3. API ENDPOINT TO RECEIVE BOOKING DATA FROM LIFF APP ---
 // This endpoint URL must match the one you set in the LIFF App settings.
 // It DOES NOT use the LINE middleware
-app.post('/api/booking', async (req, res) => {
+app.post('/api/booking', express.json(), async (req, res) => {
     try {
         const bookingData = req.body;
         console.log('Received booking data:', bookingData);
@@ -112,7 +103,17 @@ app.post('/api/booking', async (req, res) => {
 // This endpoint is for LINE to send events to. It uses the LINE middleware.
 app.post('/webhook', lineMiddleware, async (req, res) => {
     console.log('Received webhook event:', JSON.stringify(req.body.events));
-    // Here you would add logic to handle different events (e.g., reply to messages)
+    // Reply to messages
+    const event = req.body.events[0];
+    if (event && event.type === 'message' && event.message.type === 'text') {
+        const replyText = `คุณส่งข้อความมาว่า: "${event.message.text}"
+        หากต้องการจองคิว โปรดใช้ LIFF App ผ่าน Rich Menu ครับ`;
+        await lineClient.replyMessage(event.replyToken, {
+            type: 'text',
+            text: replyText,
+        });
+    }
+
     res.status(200).send('OK');
 });
 
