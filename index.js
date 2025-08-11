@@ -44,7 +44,7 @@ try {
 
 const sheets = google.sheets({ version: 'v4', auth });
 const spreadsheetId = process.env.GOOGLE_SHEET_ID;
-const bookingSheetName = 'Hair_Salon_Bookings'; // Sheet name for booking data
+const bookingSheetName = 'Booking_Data'; // Sheet name for booking data
 const technicianSheetName = 'Technicians'; // New sheet name for technician data
 
 // --- Helper function to find technician's LINE User ID from the sheet ---
