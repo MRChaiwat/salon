@@ -69,7 +69,7 @@ app.post('/api/booking', async (req, res) => {
         // Append data to Google Sheets
         await sheets.spreadsheets.values.append({
             spreadsheetId,
-            range: 'Sheet1!A:K', // Adjust the sheet name and range as needed
+            range: 'Booking_Data!A:K', // Adjust the sheet name and range as needed
             valueInputOption: 'USER_ENTERED',
             resource: {
                 values: [rowData],
