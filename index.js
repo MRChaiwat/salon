@@ -2,7 +2,6 @@
 const express = require('express');
 const { Client, middleware } = require('@line/bot-sdk');
 const { google } = require('googleapis');
-const { v4: uuidv4 } = require('uuid');
 const moment = require('moment');
 require('dotenv').config();
 
@@ -46,78 +45,91 @@ app.listen(port, () => {
 });
 
 // Middleware สำหรับ LINE Bot
-// ใช้ middleware ของ LINE เพียงตัวเดียวเท่านั้น
+// โค้ดส่วนนี้จะทำงานกับ webhook จาก LINE โดยตรง
 app.use(middleware(lineConfig));
 
 // Endpoint สำหรับ Webhook ของ LINE
 app.post('/webhook', (req, res) => {
     // ส่ง HTTP 200 OK กลับไปทันที เพื่อให้ LINE รู้ว่าเซิร์ฟเวอร์ได้รับคำขอแล้ว
     res.status(200).send('OK');
-
-    // ประมวลผลเหตุการณ์จาก LINE ในเบื้องหลัง
     Promise.all(req.body.events.map(handleEvent))
         .catch((err) => {
             console.error('Error processing LINE events:', err);
         });
 });
 
+// ** Endpoint ใหม่สำหรับรับข้อมูลการจองจาก LIFF App **
+// เราจำเป็นต้องใช้ body-parser เพื่ออ่านข้อมูล JSON ที่ส่งมาจาก Frontend
+app.use(express.json());
+app.post('/booking', async (req, res) => {
+    try {
+        const { date, time, mainService, subService, technician, price, customerName, lineUserId, phone, notes } = req.body;
+
+        // เตรียมข้อมูลที่จะบันทึกลง Google Sheets
+        const rowData = [
+            moment().format('YYYY-MM-DD HH:mm:ss'), // Timestamp
+            date, // BookingDate
+            time, // BookingTime
+            mainService, // MainService
+            subService, // SubService
+            technician, // Technician
+            price, // Price
+            customerName, // CustomerName
+            lineUserId, // LINEUserID
+            phone, // PhoneNumber
+            notes, // Notes
+        ];
+
+        // บันทึกข้อมูลลงใน Google Sheets
+        await sheets.spreadsheets.values.append({
+            spreadsheetId: process.env.GOOGLE_SHEET_ID,
+            range: 'Sheet1!A:K', // กำหนดช่วงเซลล์ที่ต้องการบันทึก
+            valueInputOption: 'RAW',
+            requestBody: {
+                values: [rowData],
+            },
+        });
+
+        // ส่งข้อความแจ้งเตือนหาลูกค้า (ผ่าน LINE Messaging API)
+        const customerMessage = {
+            type: 'text',
+            text: `ยืนยันการจองของคุณ:\nวันที่: ${date}\nเวลา: ${time}\nบริการ: ${subService}\nช่าง: ${technician}\nราคารวม: ฿${price}`
+        };
+        await client.pushMessage(lineUserId, customerMessage);
+
+        // ส่งข้อความแจ้งเตือนหาช่าง (ถ้ามี LINE ID ของช่าง)
+        const technicianMessage = {
+            type: 'text',
+            text: `มีการจองคิวใหม่!\nลูกค้า: ${customerName}\nวันที่: ${date}\nเวลา: ${time}\nบริการ: ${subService}\nช่าง: ${technician}\nเบอร์โทร: ${phone}`
+        };
+        // ใช้ process.env.TECHNICIAN_LINE_ID ที่คุณระบุไว้
+        if (process.env.TECHNICIAN_LINE_ID) {
+            await client.pushMessage(process.env.TECHNICIAN_LINE_ID, technicianMessage);
+        }
+        
+        res.status(200).json({ success: true, message: 'Booking confirmed' });
+
+    } catch (error) {
+        console.error('Error adding booking from LIFF app:', error);
+        res.status(500).json({ success: false, message: 'Failed to confirm booking' });
+    }
+});
+
 // ฟังก์ชันจัดการเหตุการณ์จาก LINE
 async function handleEvent(event) {
-    // กรองเหตุการณ์ที่ไม่ใช่ข้อความ
     if (event.type !== 'message' || event.message.type !== 'text') {
         return Promise.resolve(null);
     }
-
-    const userId = event.source.userId;
     const message = event.message.text;
-
-    console.log(`Received message from user ${userId}: ${message}`);
 
     // ตรวจสอบข้อความคำสั่ง "จองคิว"
     if (message.includes('จองคิว')) {
-        try {
-            // ดึงชื่อลูกค้าจาก LINE (ในโค้ดจริงต้องเรียก API)
-            // สำหรับตอนนี้เราใช้ค่าจำลอง
-            const customerName = 'ลูกค้า LINE (จำลอง)';
-            const technicianName = 'ช่างยังไม่ได้เลือก';
-
-            // เตรียมข้อมูลที่จะบันทึกลง Google Sheets
-            const rowData = [
-                moment().format('YYYY-MM-DD HH:mm:ss'), // Timestamp
-                '', // BookingDate (ยังไม่มีข้อมูล)
-                '', // BookingTime (ยังไม่มีข้อมูล)
-                '', // MainService (ยังไม่มีข้อมูล)
-                '', // SubService (ยังไม่มีข้อมูล)
-                technicianName, // Technician
-                '', // Price (ยังไม่มีข้อมูล)
-                customerName, // CustomerName
-                userId, // LINEUserID
-                '', // PhoneNumber (ยังไม่มีข้อมูล)
-                message, // Notes
-            ];
-
-            // บันทึกข้อมูลลงใน Google Sheets
-            await sheets.spreadsheets.values.append({
-                spreadsheetId: spreadsheetId,
-                range: 'Sheet1!A:K', // กำหนดช่วงเซลล์ที่ต้องการบันทึก
-                valueInputOption: 'RAW',
-                requestBody: {
-                    values: [rowData],
-                },
-            });
-
-            // ส่งข้อความตอบกลับไปยัง LINE
-            const replyMessage = {
-                type: 'text',
-                text: 'ขอบคุณครับ! ระบบได้รับคำขอจองคิวแล้ว\nจะบันทึกข้อมูลไว้ใน Google Sheets ครับ'
-            };
-            await client.replyMessage(event.replyToken, replyMessage);
-
-        } catch (error) {
-            console.error('Error adding booking to Google Sheets:', error);
-            const replyMessage = { type: 'text', text: 'ขออภัย เกิดข้อผิดพลาดในการบันทึกการจอง' };
-            await client.replyMessage(event.replyToken, replyMessage);
-        }
+        // ในโค้ดจริง ตรงนี้จะเปิด LIFF app ขึ้นมา
+        const replyMessage = {
+            type: 'text',
+            text: 'กรุณาใช้ Mini App เพื่อจองคิว'
+        };
+        await client.replyMessage(event.replyToken, replyMessage);
     } else {
         // ตอบกลับข้อความที่ไม่ตรงกับคำสั่ง
         const replyMessage = { type: 'text', text: 'สวัสดีครับ โปรดพิมพ์ "จองคิว" เพื่อเริ่มต้นการจอง' };
