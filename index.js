@@ -47,8 +47,9 @@ app.listen(port, () => {
 
 
 // Middleware สำหรับ LINE Bot
-app.use(express.json());
+// ต้องให้ middleware ของ LINE ทำงานก่อน express.json()
 app.use(middleware(lineConfig));
+app.use(express.json());
 
 // Endpoint สำหรับ Webhook ของ LINE
 app.post('/webhook', (req, res) => {
