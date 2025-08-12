@@ -44,8 +44,9 @@ try {
 
 const sheets = google.sheets({ version: 'v4', auth });
 const spreadsheetId = process.env.GOOGLE_SHEET_ID;
-const bookingSheetName = 'Booking_Data'; // Sheet name for booking data
-const technicianSheetName = 'Technicians'; // New sheet name for technician data
+const bookingSheetName = 'Hair_Salon_Bookings';
+const technicianSheetName = 'Technicians';
+const serviceSheetName = 'Services'; // New sheet name for services
 
 // --- Helper function to find technician's LINE User ID from the sheet ---
 /**
@@ -60,7 +61,6 @@ async function getTechnicianUserId(technicianName) {
             range: `${technicianSheetName}!A:B`, // Assuming 'ชื่อช่าง' is in column A and 'LINE User ID' in column B
         });
         const rows = response.data.values || [];
-        // Skip the header row and find the matching technician name
         const technicianRow = rows.slice(1).find(row => row[0] === technicianName);
         return technicianRow ? technicianRow[1] : null;
     } catch (error) {
@@ -69,8 +69,69 @@ async function getTechnicianUserId(technicianName) {
     }
 }
 
-// --- 3. API ENDPOINT for checking availability ---
-// Receives 'date' from the Frontend to check for existing bookings
+// --- NEW API ENDPOINT for getting technician list ---
+app.get('/api/technicians', async (req, res) => {
+    try {
+        const response = await sheets.spreadsheets.values.get({
+            spreadsheetId,
+            range: `${technicianSheetName}!A:A`, // Read only the column with technician names
+        });
+        const rows = response.data.values || [];
+        const technicians = rows.slice(1).map(row => row[0]); // Skip header and extract names
+        res.status(200).json(technicians);
+    } catch (error) {
+        console.error('Error fetching technicians:', error);
+        res.status(500).json({ success: false, message: 'Internal Server Error' });
+    }
+});
+
+// --- NEW API ENDPOINT for getting services and prices ---
+app.get('/api/services', async (req, res) => {
+    try {
+        const response = await sheets.spreadsheets.values.get({
+            spreadsheetId,
+            range: `${serviceSheetName}!A:C`, // Read Main Service (A), Sub Service (B), and Price (C)
+        });
+        const rows = response.data.values || [];
+        if (rows.length === 0) {
+            return res.status(200).json({ mainServices: [], subServices: [], prices: {} });
+        }
+
+        const mainServicesSet = new Set();
+        const subServicesSet = new Set();
+        const prices = {};
+
+        // Skip the header row and process data
+        rows.slice(1).forEach(row => {
+            const main = row[0];
+            const sub = row[1];
+            const price = parseInt(row[2], 10);
+
+            if (main) {
+                mainServicesSet.add(main);
+            }
+            if (sub) {
+                subServicesSet.add(sub);
+            }
+            // Create a unique key for the service combination
+            const serviceKey = `${main}-${sub}`;
+            prices[serviceKey] = price;
+        });
+
+        const data = {
+            mainServices: Array.from(mainServicesSet),
+            subServices: Array.from(subServicesSet),
+            prices: prices,
+        };
+
+        res.status(200).json(data);
+    } catch (error) {
+        console.error('Error fetching services:', error);
+        res.status(500).json({ success: false, message: 'Internal Server Error' });
+    }
+});
+
+// --- API ENDPOINT for checking availability ---
 app.get('/api/availability', async (req, res) => {
     try {
         const { date } = req.query;
@@ -80,15 +141,13 @@ app.get('/api/availability', async (req, res) => {
 
         const response = await sheets.spreadsheets.values.get({
             spreadsheetId,
-            range: `${bookingSheetName}!B:C`, // Read only Date (B) and Time (C) columns
+            range: `${bookingSheetName}!B:C`,
         });
 
         const bookedSlots = [];
         const existingBookings = response.data.values || [];
 
-        // Filter data to find booked times on the selected date
         if (existingBookings.length > 0) {
-            // Skip the header row
             existingBookings.slice(1).forEach(row => {
                 const bookingDate = row[0];
                 const bookingTime = row[1];
@@ -107,7 +166,7 @@ app.get('/api/availability', async (req, res) => {
     }
 });
 
-// --- 4. API ENDPOINT to receive booking data from the LIFF App ---
+// --- API ENDPOINT to receive booking data from the LIFF App ---
 app.post('/api/booking', async (req, res) => {
     try {
         const bookingData = req.body;
@@ -117,7 +176,7 @@ app.post('/api/booking', async (req, res) => {
         const { date, time } = bookingData;
         const response = await sheets.spreadsheets.values.get({
             spreadsheetId,
-            range: `${bookingSheetName}!B:C`, // Read Date (B) and Time (C) columns
+            range: `${bookingSheetName}!B:C`,
         });
 
         const existingBookings = response.data.values || [];
@@ -137,7 +196,7 @@ app.post('/api/booking', async (req, res) => {
             bookingData.mainService,
             bookingData.subService,
             bookingData.technician,
-            bookingData.price,
+            bookingData.price, // Ensure the price is included
             bookingData.customerName,
             bookingData.lineUserId,
             bookingData.phoneNumber,
@@ -163,21 +222,23 @@ app.post('/api/booking', async (req, res) => {
                 text: `✅ ยืนยันการจองทำผมของคุณสำเร็จ!
 วันที่: ${bookingData.date}
 เวลา: ${bookingData.time}
-บริการ: ${bookingData.mainService}
+บริการ: ${bookingData.mainService} ${bookingData.subService ? `+ ${bookingData.subService}` : ''}
 ช่าง: ${bookingData.technician}
+ราคา: ${bookingData.price} บาท
 ขอบคุณที่ใช้บริการครับ`,
             });
             console.log('Confirmation message sent to the customer.');
         }
 
-        // --- NEW: Find technician's User ID and send notification ---
+        // Find technician's User ID and send notification
         const technicianUserId = await getTechnicianUserId(bookingData.technician);
         if (technicianUserId) {
             const technicianMessage = `📢 มีคิวทำผมใหม่!
 วันที่: ${bookingData.date}
 เวลา: ${bookingData.time}
 ลูกค้า: ${bookingData.customerName}
-บริการ: ${bookingData.mainService}
+บริการ: ${bookingData.mainService} ${bookingData.subService ? `+ ${bookingData.subService}` : ''}
+ราคา: ${bookingData.price} บาท
 ช่าง: ${bookingData.technician}
 เบอร์โทร: ${bookingData.phoneNumber}
 หมายเหตุ: ${bookingData.notes}`;
@@ -190,7 +251,6 @@ app.post('/api/booking', async (req, res) => {
         } else {
             console.warn(`LINE User ID not found for technician: ${bookingData.technician}. Cannot send notification.`);
         }
-        // --- END NEW ---
 
         res.status(200).json({ success: true, message: 'Booking confirmed successfully.' });
 
